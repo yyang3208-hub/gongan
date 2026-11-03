@@ -1,0 +1,13 @@
+node_modules/
+dist/
+public/vendor/
+data/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+.local/
+__pycache__/
+*.py[cod]
+*.log

@@ -1,0 +1,113 @@
+离线图片结构化与属性向量检索
+
+范围
+本工具只处理授权视频抽出的图片，生成图片级可见属性和检索向量。
+不推断性别，不建立身份匹配、跨视频聚档或人员布控功能。
+年龄字段仅是粗略外观估计，带estimated和requiresHumanReview标记；
+真实年龄未知，且不能用年龄估计做精确筛选。
+
+运行环境
+复用上级目录的.venv-vlx及已经安装的本地模型，不下载模型。
+补充依赖：offline-attributes.requirements.txt。
+VLX-Seek-1.5-10B负责可见属性，使用语言层NF4量化。
+multilingual-e5-small负责384维中文属性文本向量。
+原测试SigLIP的1152维图片向量原样核验后存为独立appearance向量。
+这些不是VLX隐藏层向量，也不是人体身份/ReID特征。
+
+默认数据目录
+工作区\.local\offline-attributes-test-v3
+  images：755张独立图片副本，UUID为图片记录标识，不是人员身份标识。
+  manifest.json：图片校验值、原视频帧号/PTS/bbox、模型和schema标识。
+  attributes.jsonl：每张图片的结构化属性和VLX原始回答。
+  state.json：extracting/extracted/indexed/failed状态及统计。
+  failures：无效输出的诊断证据，不混入正常属性记录。
+  qdrant：独立本地持久化数据库；不触碰已有业务数据库。
+  appearance-vectors.npy：按源vectorRow索引的真实图片向量。
+  attribute-vectors.npy：按vector-order.json顺序的真实属性文本向量。
+
+结构化设计
+先单独分类主要物体，再按类别执行具名字段JSON Schema约束生成。
+复用本地VLX视觉预处理和多模态Token展开；不修改上游模型代码。
+lm-format-enforcer使用核心TokenEnforcer，而不使用其不兼容当前
+Transformers版本的旧集成导入路径。
+Schema约束防止数组错位和缺字段，不保证模型观察正确。
+字段值状态：
+  model_observation：模型可见属性候选，需要人工核验。
+  unknown：未识别或不可见，value=null；不能等同于“无”。
+  not_applicable：不适用，例如没有帽子时的帽子颜色。
+  estimated：仅外观年龄估计。
+  unverified：品牌型号或号牌的候选文字，不计入属性文本向量。
+背面图的年龄/口罩/眼镜被明确标为未知，不以背面观察断言不存在。
+smallTarget和categoryConflict用于提示小目标及YOLO/VLX主体类别冲突。
+训练类别错误、遮挡、裁剪边界和背景干扰不会因为JSON有效而消失。
+
+人体字段
+支持尝试提取粗略外观年龄、打伞、发型、帽子及颜色、包型、拎物、
+口罩、眼镜、拉杆箱、手推车、抱小孩、上衣纹理/款式/颜色、
+下装款式/颜色、鞋色和朝向。
+均为可见属性候选，不是已通过准确率验收的产品能力。
+身体轮廓、姿态和动作不是普通人物框的同义词。
+
+车辆字段
+定义了二轮车、三轮车和机动车对应字段。两/三轮车的h只表示可见骑行者。
+机动车品牌/号码只能保留未经核验的候选；需要专用OCR/车型模型才能验收。
+车内安全带、遮阳板、摆件等没有足够清晰的视角时输出未知。
+driver_phone_near_head仅表示可见姿态，不代表已确认“接打电话”。
+本次市场人物视频缺乏可靠的车辆/三轮车/车内细节样本，不能证明这些能力。
+其他物体无适用人体/车辆属性，不伪造人体字段；仍保存图片向量和类别元数据。
+
+PowerShell命令
+下面命令在gongan目录执行；路径有空格或中文时使用单引号。
+
+$python = 'D:\开发项目\司空2\.venv-vlx\Scripts\python.exe'
+
+# 先测试代表图片。source是已完成的抽帧/跟踪结果目录，
+# 要求包含result.json、crop-vectors.npy及所有裁剪图片。
+& $python .\scripts\offline_attributes.py probe --source '<完成的裁剪结果目录>'
+
+# 可恢复的批量提取；每张记录写入后flush+fsync。
+& $python .\scripts\offline_attributes.py extract --source '<完成的裁剪结果目录>'
+
+# 所有图片属性完成后，写入独立本地Qdrant测试库。
+& $python .\scripts\offline_attributes.py index
+
+# 中文属性模糊查询：检索模型提取的属性文本，不直接重新分析原图。
+& $python .\scripts\offline_attributes.py query --text '穿黄色短袖上衣的人' --kind person --limit 10
+
+# 模糊排序与已观察属性的精确过滤组合。
+& $python .\scripts\offline_attributes.py query --text '穿黄色短袖上衣的人' --kind person --field top_color=yellow --limit 10
+
+# 图片级外观相似检索：参数是数据库图片记录UUID，不是人物身份。
+& $python .\scripts\offline_attributes.py query --image-id '<图片UUID>' --limit 10
+
+# 查询结果可保存为JSON；返回绝对图片路径、PTS、bbox、属性和相似度。
+& $python .\scripts\offline_attributes.py query --text '白色上衣的人' --kind person --result '.\white-query.json'
+
+# 分页：offset=10返回下一页。完整遍历与top-K探索查询不同。
+& $python .\scripts\offline_attributes.py query --text '白色上衣的人' --kind person --offset 10 --limit 10
+
+可选参数
+--output必须放在子命令之前，用于选择独立数据目录。
+--root必须放在子命令之前，默认为包含ai目录的上级项目。
+--field支持明确的枚举属性，如top_color=yellow、hair=bald；
+拒绝未知值、年龄精确过滤、性别和身份字段。
+未知属性不满足“有”或“无”的精确过滤条件。
+
+检索边界
+属性文本向量和图片向量是两个不同度量空间，不混用或相加分数。
+属性中文查询使用E5的query前缀；入库文本使用passage前缀。
+向量相似度是排序分数，不是准确率或置信概率。
+无硬过滤时，模糊查询可能返回不满足全部条件的相近图片；
+严格颜色/包型条件应添加对应字段过滤，再核验模型和原图。
+例如“背包”可以被错判成围裙带，不能凭相似度证明图中确有背包。
+同一人多张图仍为独立图片记录，不进行身份聚合或跨视频跟踪。
+Qdrant是单进程本地持久化模式，不是远程集群或多路实时吞吐证明。
+本工具不启动HTTP服务，不接入网页上传，不读取已有业务数据库。
+
+验证
+& $python -m unittest discover -s .\tests -p test_offline_attributes.py -v
+测试覆盖未知/无的区分、外观年龄标记、字段契约、JSON Schema、
+背面/帽子可见性政策、过滤白名单以及命名向量数据库关闭后重新打开。
+批量完成后的验收必须核实755条记录、图片校验、单位向量、
+数据库持久化计数和真实中文查询返回路径。
+仅JSON有效和数据库可检索不代表属性Precision/Recall已经达标。

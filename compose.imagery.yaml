@@ -1,0 +1,22 @@
+services:
+  nodeodm:
+    image: opendronemap/nodeodm:latest
+    restart: unless-stopped
+    volumes:
+      - nodeodm-data:/var/www/data
+    shm_size: 2gb
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile.imagery
+    restart: unless-stopped
+    depends_on:
+      - nodeodm
+    environment:
+      IMAGERY_NODEODM_URL: http://nodeodm:3000/
+    ports:
+      - "127.0.0.1:3231:3221"
+    volumes:
+      - ./data:/app/data
+volumes:
+  nodeodm-data:
